@@ -1,0 +1,6 @@
+{
+  "name": "Pocketly",
+  "description": "Mobile-first productivity and task companion app with mascot health, streak tracking, and shake-to-complete interactions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
