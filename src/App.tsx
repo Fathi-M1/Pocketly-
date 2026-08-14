@@ -8,7 +8,9 @@ import { CompanionScreen } from './components/CompanionScreen';
 import { TaskDetailsModal } from './components/TaskDetailsModal';
 import { QuickCaptureModal } from './components/QuickCaptureModal';
 import { ShakeCompleteModal } from './components/ShakeCompleteModal';
+import { PhotoCaptureModal } from './components/PhotoCaptureModal';
 import { BottomNavBar } from './components/BottomNavBar';
+import { Camera } from 'lucide-react';
 import { Heart, Flame, RefreshCw, Smartphone } from 'lucide-react';
 
 const STORAGE_VERSION = 'v2';
@@ -47,6 +49,7 @@ export default function App() {
   const [quickAddDate, setQuickAddDate] = useState<string | undefined>(undefined);
   const [isShakeOpen, setIsShakeOpen] = useState(false);
   const [taskForShake, setTaskForShake] = useState<Task | null>(null);
+  const [isPhotoOpen, setIsPhotoOpen] = useState(false);
 
   // Sync to local storage
   useEffect(() => {
@@ -143,6 +146,20 @@ export default function App() {
     setCompanion((prev) => ({
       ...prev,
       message: `New task locked in: "${task.title.slice(0, 20)}..."! Let's crush it!`,
+    }));
+  };
+
+  // Add multiple tasks from photo scan
+  const handleAddPhotoTasks = (newTasks: Omit<Task, 'id' | 'completed'>[]) => {
+    const tasks: Task[] = newTasks.map((t, i) => ({
+      ...t,
+      id: `task-${Date.now()}-${i}`,
+      completed: false,
+    }));
+    setTasks((prev) => [...tasks, ...prev]);
+    setCompanion((prev) => ({
+      ...prev,
+      message: `📸 Added ${tasks.length} task${tasks.length > 1 ? 's' : ''} from your photo!`,
     }));
   };
 
@@ -259,6 +276,17 @@ export default function App() {
                   ? 'Calendar'
                   : 'Companion'
               }
+              rightAction={
+                activeTab === 'today' ? (
+                  <button
+                    onClick={() => setIsPhotoOpen(true)}
+                    className="w-10 h-10 rounded-full bg-[#7047EB] flex items-center justify-center shadow-md shadow-purple-400/30 active:scale-95 transition"
+                    title="Scan task list from photo"
+                  >
+                    <Camera className="w-5 h-5 text-white" />
+                  </button>
+                ) : undefined
+              }
             />
 
             {activeTab === 'today' && (
@@ -327,6 +355,12 @@ export default function App() {
           setTaskForShake(null);
         }}
         onCompleteSuccess={handleShakeCompleteSuccess}
+      />
+
+      <PhotoCaptureModal
+        isOpen={isPhotoOpen}
+        onClose={() => setIsPhotoOpen(false)}
+        onAddTasks={handleAddPhotoTasks}
       />
     </div>
   );
