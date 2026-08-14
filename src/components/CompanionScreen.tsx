@@ -1,8 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { CompanionStats, MascotMood } from '../types';
 import { PockyMascot } from './PockyMascot';
-import { Heart, Flame, Sparkles, Zap, Brain, Trophy, CheckCircle2, TrendingUp, Smile, Clock, BatteryWarning } from 'lucide-react';
+import { Heart, Flame, Brain, Trophy } from 'lucide-react';
+
+const PET_REACTIONS = [
+  { msg: "Purrrr~ don't stop! 🐾", emoji: "😻" },
+  { msg: "Okay okay I like this 😤", emoji: "🥰" },
+  { msg: "MORE. I demand more pets.", emoji: "👑" },
+  { msg: "You're my favourite human 🫶", emoji: "💜" },
+  { msg: "*pretends not to enjoy it*", emoji: "😼" },
+  { msg: "That tickles!! hehe 🤭", emoji: "😹" },
+  { msg: "I will allow this... for now.", emoji: "🧐" },
+  { msg: "Pet count: INFINITE needed", emoji: "♾️" },
+  { msg: "Power level increasing 📈", emoji: "⚡" },
+  { msg: "bro i'm literally glowing rn", emoji: "✨" },
+];
 
 interface CompanionScreenProps {
   companion: CompanionStats;
@@ -16,6 +29,22 @@ export const CompanionScreen: React.FC<CompanionScreenProps> = ({
   onChangeMood,
 }) => {
   const [activeTab, setActiveTab] = useState<'mood' | 'progress'>('mood');
+  const [petCount, setPetCount] = useState(0);
+  const [reaction, setReaction] = useState<{ msg: string; emoji: string } | null>(null);
+  const [isBooping, setIsBooping] = useState(false);
+  const reactionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handlePet = () => {
+    onPetMascot();
+    const next = petCount + 1;
+    setPetCount(next);
+    setIsBooping(true);
+    setTimeout(() => setIsBooping(false), 400);
+    const r = PET_REACTIONS[(next - 1) % PET_REACTIONS.length];
+    setReaction(r);
+    if (reactionTimer.current) clearTimeout(reactionTimer.current);
+    reactionTimer.current = setTimeout(() => setReaction(null), 2200);
+  };
 
   // Mood descriptions map
   const moodTitles: Record<MascotMood, { title: string; subtitle: string }> = {
@@ -59,14 +88,28 @@ export const CompanionScreen: React.FC<CompanionScreenProps> = ({
         <div className="absolute inset-0 bg-gradient-to-b from-purple-50/60 via-transparent to-transparent pointer-events-none" />
 
         {/* Mascot Sticker Stage */}
-        <div className="relative my-2">
-          <PockyMascot
-            mood={companion.mood}
-            size="showcase"
-            interactive
-            onPet={onPetMascot}
-            showBadge
-          />
+        <div className="relative my-2" onClick={handlePet}>
+          <motion.div
+            animate={isBooping ? { scale: [1, 1.18, 0.92, 1.05, 1], rotate: [0, -8, 8, -4, 0] } : {}}
+            transition={{ duration: 0.4 }}
+          >
+            <PockyMascot mood={companion.mood} size="showcase" interactive onPet={handlePet} showBadge />
+          </motion.div>
+
+          {/* Floating reaction bubble */}
+          <AnimatePresence>
+            {reaction && (
+              <motion.div
+                key={reaction.msg}
+                initial={{ opacity: 0, y: 10, scale: 0.8 }}
+                animate={{ opacity: 1, y: -8, scale: 1 }}
+                exit={{ opacity: 0, y: -20, scale: 0.9 }}
+                className="absolute -top-2 left-1/2 -translate-x-1/2 bg-[#7047EB] text-white text-xs font-bold px-3 py-1.5 rounded-2xl shadow-lg whitespace-nowrap z-10"
+              >
+                {reaction.emoji} {reaction.msg}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Mascot Mood Selector Pills (to explore all companion states) */}
@@ -264,13 +307,19 @@ export const CompanionScreen: React.FC<CompanionScreenProps> = ({
       </div>
 
       {/* 5. Bottom Pet Pocky Action Button */}
-      <button
-        onClick={onPetMascot}
-        className="w-full bg-[#7047EB] hover:bg-[#5E35D9] text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-purple-500/25 active:scale-[0.98] transition flex items-center justify-center gap-2 text-base cursor-pointer"
+      <motion.button
+        whileTap={{ scale: 0.94 }}
+        onClick={handlePet}
+        className="w-full bg-[#7047EB] hover:bg-[#5E35D9] text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-purple-500/25 transition flex items-center justify-center gap-2 text-base cursor-pointer relative overflow-hidden"
       >
         <span className="text-lg">🐾</span>
         <span>Pet Pocky</span>
-      </button>
+        {petCount > 0 && (
+          <span className="absolute right-4 bg-white/20 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+            ×{petCount}
+          </span>
+        )}
+      </motion.button>
     </div>
   );
 };
