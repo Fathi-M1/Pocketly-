@@ -1,8 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI } from '@google/genai';
+import { createWorker } from 'tesseract.js';
 import { Task, Priority } from '../types';
-import { Camera, X, Check, Loader2, Upload, AlertCircle, ChevronRight } from 'lucide-react';
+import { Camera, X, Check, Upload, ChevronRight, ScanText } from 'lucide-react';
 
 interface ParsedTask {
   title: string;
@@ -18,104 +18,87 @@ interface PhotoCaptureModalProps {
 
 const today = () => new Date().toISOString().split('T')[0];
 
+const inferPriority = (text: string): Priority => {
+  const t = text.toLowerCase();
+  if (/urgent|asap|important|critical|must|deadline|today|now/.test(t)) return 'high';
+  if (/maybe|someday|later|low|whenever|optional/.test(t)) return 'low';
+  return 'medium';
+};
+
+const parseLines = (rawText: string): ParsedTask[] =>
+  rawText
+    .split('\n')
+    .map((l) => l.replace(/^[\s\-\*\•\d\.\)\[\]xX✓✗□■◻◼]+/, '').trim())
+    .filter((l) => l.length > 2)
+    .map((title) => ({ title, priority: inferPriority(title), selected: true }));
+
 export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
   isOpen,
   onClose,
   onAddTasks,
 }) => {
-  const [stage, setStage] = useState<'capture' | 'parsing' | 'review' | 'error'>('capture');
-  const [parsedTasks, setParsedTasks] = useState<ParsedTask[]>([]);
-  const [errorMsg, setErrorMsg] = useState('');
+  const [stage, setStage] = useState<'capture' | 'scanning' | 'review' | 'error'>('capture');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [parsedTasks, setParsedTasks] = useState<ParsedTask[]>([]);
+  const [progress, setProgress] = useState(0);
+  const [errorMsg, setErrorMsg] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
-  const reset = () => {
-    setStage('capture');
-    setParsedTasks([]);
-    setErrorMsg('');
-    setPreviewUrl(null);
-  };
-
+  const reset = () => { setStage('capture'); setParsedTasks([]); setPreviewUrl(null); setProgress(0); };
   const handleClose = () => { reset(); onClose(); };
 
-  const processImage = async (file: File) => {
+  const handleImage = async (file: File) => {
     setPreviewUrl(URL.createObjectURL(file));
-    setStage('parsing');
+    setStage('scanning');
+    setProgress(0);
 
     try {
-      const apiKey = import.meta.env.VITE_GEMINI_API_KEY || (window as any).GEMINI_API_KEY;
-      console.log('[PhotoCapture] API key present:', !!apiKey, '| first 6 chars:', apiKey?.slice(0, 6));
-      if (!apiKey) throw new Error('API key missing — add VITE_GEMINI_API_KEY to Vercel env vars and redeploy.');
-
-      const ai = new GoogleGenAI({ apiKey });
-
-      const base64 = await fileToBase64(file);
-
-      const result = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                inlineData: {
-                  mimeType: file.type as 'image/jpeg' | 'image/png' | 'image/webp',
-                  data: base64,
-                },
-              },
-              {
-                text: `Extract every to-do item or task from this image. Return ONLY a JSON array, no markdown, no explanation.
-Format: [{"title": "task text", "priority": "low"|"medium"|"high"}]
-Rules:
-- Each bullet point, numbered item, or checkbox = one task
-- Infer priority: words like urgent/asap/important = high, normal = medium, someday/maybe = low
-- Clean up the text (fix obvious OCR errors, capitalize properly)
-- If no tasks found, return []`,
-              },
-            ],
-          },
-        ],
+      const worker = await createWorker('eng', 1, {
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            setProgress(Math.round(m.progress * 100));
+          }
+        },
       });
 
-      const text = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) throw new Error('Could not parse tasks from image. Try a clearer photo.');
+      const { data } = await worker.recognize(file);
+      await worker.terminate();
 
-      const items: { title: string; priority: Priority }[] = JSON.parse(jsonMatch[0]);
-      if (!items.length) throw new Error('No tasks found in the image. Make sure the list is visible and clear.');
+      const tasks = parseLines(data.text);
 
-      setParsedTasks(items.map((t) => ({ ...t, selected: true })));
+      if (!tasks.length) {
+        setErrorMsg('No tasks found — make sure the list text is clear and readable.');
+        setStage('error');
+        return;
+      }
+
+      setParsedTasks(tasks);
       setStage('review');
     } catch (e: any) {
-      console.error('[PhotoCapture] Error:', e);
-      const msg = e?.message ?? String(e);
-      setErrorMsg(msg);
+      setErrorMsg(e?.message ?? 'OCR failed. Try a clearer, well-lit photo.');
       setStage('error');
     }
   };
 
-  const fileToBase64 = (file: File): Promise<string> =>
-    new Promise((res, rej) => {
-      const reader = new FileReader();
-      reader.onload = () => res((reader.result as string).split(',')[1]);
-      reader.onerror = rej;
-      reader.readAsDataURL(file);
-    });
-
   const toggleTask = (i: number) =>
     setParsedTasks((prev) => prev.map((t, idx) => idx === i ? { ...t, selected: !t.selected } : t));
 
+  const cyclePriority = (i: number) => {
+    const order: Priority[] = ['low', 'medium', 'high'];
+    setParsedTasks((prev) =>
+      prev.map((t, idx) =>
+        idx === i ? { ...t, priority: order[(order.indexOf(t.priority) + 1) % 3] } : t
+      )
+    );
+  };
+
   const handleAdd = () => {
-    const toAdd = parsedTasks
-      .filter((t) => t.selected)
-      .map((t) => ({
-        title: t.title,
-        priority: t.priority,
-        date: today(),
-        category: 'general' as const,
-      }));
-    onAddTasks(toAdd);
+    onAddTasks(
+      parsedTasks
+        .filter((t) => t.selected)
+        .map((t) => ({ title: t.title, priority: t.priority, date: today(), category: 'general' as const }))
+    );
     handleClose();
   };
 
@@ -132,28 +115,30 @@ Rules:
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-12 pb-4 bg-white border-b border-slate-100">
-          <h2 className="text-lg font-extrabold text-slate-900">Scan Task List</h2>
+          <h2 className="text-lg font-extrabold text-slate-900">
+            {stage === 'capture' ? 'Scan Task List'
+              : stage === 'scanning' ? 'Reading Your List...'
+              : stage === 'review' ? 'Review Tasks'
+              : 'Could Not Read'}
+          </h2>
           <button onClick={handleClose} className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center">
             <X className="w-5 h-5 text-slate-600" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5 py-6 flex flex-col gap-5">
+        <div className="flex-1 overflow-y-auto px-5 py-6 flex flex-col gap-4">
 
-          {/* STAGE: capture */}
+          {/* CAPTURE */}
           {stage === 'capture' && (
-            <div className="flex flex-col gap-4">
-              <div className="bg-purple-50 border border-purple-100 rounded-3xl p-5 text-center flex flex-col items-center gap-3">
-                <div className="w-16 h-16 rounded-2xl bg-[#7047EB] flex items-center justify-center shadow-lg shadow-purple-400/30">
-                  <Camera className="w-8 h-8 text-white" />
+            <>
+              <div className="bg-purple-50 border border-purple-100 rounded-3xl p-5 text-center flex flex-col items-center gap-2">
+                <div className="w-14 h-14 rounded-2xl bg-[#7047EB] flex items-center justify-center shadow-lg shadow-purple-400/30">
+                  <ScanText className="w-7 h-7 text-white" />
                 </div>
-                <div>
-                  <h3 className="font-extrabold text-slate-900 text-base">Photo your to-do list</h3>
-                  <p className="text-xs text-slate-500 mt-1">Take a photo or upload an image of any handwritten or printed task list.</p>
-                </div>
+                <h3 className="font-extrabold text-slate-900 text-base">Point at your list</h3>
+                <p className="text-xs text-slate-500">Take a photo of any handwritten or printed to-do list. Tasks are auto-extracted instantly — no internet needed.</p>
               </div>
 
-              {/* Camera button (mobile) */}
               <button
                 onClick={() => cameraInputRef.current?.click()}
                 className="w-full bg-[#7047EB] text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-purple-400/30 active:scale-[0.98] transition"
@@ -162,7 +147,6 @@ Rules:
                 Take Photo
               </button>
 
-              {/* Upload button */}
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className="w-full bg-white border-2 border-slate-200 text-slate-700 font-bold py-4 rounded-2xl flex items-center justify-center gap-2 active:scale-[0.98] transition"
@@ -171,80 +155,87 @@ Rules:
                 Upload Image
               </button>
 
-              <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => e.target.files?.[0] && processImage(e.target.files[0])} />
-              <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && processImage(e.target.files[0])} />
-            </div>
+              <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden"
+                onChange={(e) => e.target.files?.[0] && handleImage(e.target.files[0])} />
+              <input ref={fileInputRef} type="file" accept="image/*" className="hidden"
+                onChange={(e) => e.target.files?.[0] && handleImage(e.target.files[0])} />
+            </>
           )}
 
-          {/* STAGE: parsing */}
-          {stage === 'parsing' && (
-            <div className="flex flex-col items-center gap-5 py-8">
+          {/* SCANNING */}
+          {stage === 'scanning' && (
+            <div className="flex flex-col items-center gap-5">
               {previewUrl && (
-                <img src={previewUrl} alt="Captured list" className="w-full max-h-52 object-cover rounded-2xl border border-slate-200" />
+                <img src={previewUrl} alt="Your list" className="w-full max-h-52 object-contain rounded-2xl border border-slate-200 bg-white" />
               )}
-              <div className="flex flex-col items-center gap-3">
-                <div className="w-14 h-14 rounded-full bg-purple-100 flex items-center justify-center">
-                  <Loader2 className="w-7 h-7 text-[#7047EB] animate-spin" />
+              <div className="w-full flex flex-col gap-3">
+                <div className="w-full h-3 bg-purple-100 rounded-full overflow-hidden">
+                  <motion.div
+                    animate={{ width: `${progress}%` }}
+                    transition={{ duration: 0.3 }}
+                    className="h-full bg-[#7047EB] rounded-full"
+                  />
                 </div>
-                <p className="font-bold text-slate-800">Reading your list...</p>
-                <p className="text-xs text-slate-400">Gemini AI is extracting your tasks</p>
+                <p className="text-center text-sm font-bold text-slate-600">Scanning text... {progress}%</p>
+                <p className="text-center text-xs text-slate-400">Running on-device OCR — no internet needed</p>
               </div>
             </div>
           )}
 
-          {/* STAGE: review */}
+          {/* REVIEW */}
           {stage === 'review' && (
-            <div className="flex flex-col gap-4">
+            <>
               {previewUrl && (
-                <img src={previewUrl} alt="Captured list" className="w-full max-h-40 object-cover rounded-2xl border border-slate-200" />
+                <img src={previewUrl} alt="Your list" className="w-full max-h-32 object-contain rounded-2xl border border-slate-200 bg-white" />
               )}
-              <div>
-                <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                  Found {parsedTasks.length} task{parsedTasks.length !== 1 ? 's' : ''} — tap to deselect
-                </p>
-                <div className="flex flex-col gap-2">
-                  {parsedTasks.map((t, i) => (
-                    <motion.button
-                      key={i}
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: i * 0.05 }}
+              <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                {parsedTasks.length} task{parsedTasks.length !== 1 ? 's' : ''} found · tap priority to change · tap row to toggle
+              </p>
+              <div className="flex flex-col gap-2">
+                {parsedTasks.map((t, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.04 }}
+                    className={`flex items-center gap-3 p-4 rounded-2xl border transition ${
+                      t.selected ? 'bg-white border-purple-200 shadow-sm' : 'bg-slate-50 border-slate-200 opacity-40'
+                    }`}
+                  >
+                    <button
                       onClick={() => toggleTask(i)}
-                      className={`flex items-center gap-3 p-4 rounded-2xl border text-left transition ${
-                        t.selected
-                          ? 'bg-white border-purple-200 shadow-sm'
-                          : 'bg-slate-50 border-slate-200 opacity-50'
+                      className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 transition ${
+                        t.selected ? 'bg-[#7047EB] border-[#7047EB]' : 'border-slate-300'
                       }`}
                     >
-                      <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 transition ${
-                        t.selected ? 'bg-[#7047EB] border-[#7047EB]' : 'border-slate-300'
-                      }`}>
-                        {t.selected && <Check className="w-3.5 h-3.5 text-white" />}
-                      </div>
-                      <span className="flex-1 text-sm font-semibold text-slate-800">{t.title}</span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      {t.selected && <Check className="w-3.5 h-3.5 text-white" />}
+                    </button>
+                    <span className="flex-1 text-sm font-semibold text-slate-800 text-left">{t.title}</span>
+                    <button
+                      onClick={() => cyclePriority(i)}
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
                         t.priority === 'high' ? 'bg-red-100 text-red-600'
                         : t.priority === 'medium' ? 'bg-amber-100 text-amber-600'
                         : 'bg-slate-100 text-slate-500'
-                      }`}>
-                        {t.priority}
-                      </span>
-                      <ChevronRight className="w-4 h-4 text-slate-300" />
-                    </motion.button>
-                  ))}
-                </div>
+                      }`}
+                    >
+                      {t.priority}
+                    </button>
+                    <ChevronRight className="w-4 h-4 text-slate-300" />
+                  </motion.div>
+                ))}
               </div>
-            </div>
+            </>
           )}
 
-          {/* STAGE: error */}
+          {/* ERROR */}
           {stage === 'error' && (
             <div className="flex flex-col items-center gap-4 py-8 text-center">
               <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center">
-                <AlertCircle className="w-7 h-7 text-red-500" />
+                <ScanText className="w-7 h-7 text-red-400" />
               </div>
               <div>
-                <p className="font-bold text-slate-800">Could not read list</p>
+                <p className="font-bold text-slate-800">Couldn't read the list</p>
                 <p className="text-xs text-slate-500 mt-1 max-w-xs">{errorMsg}</p>
               </div>
               <button onClick={reset} className="px-5 py-2.5 rounded-xl bg-[#7047EB] text-white font-bold text-sm">
