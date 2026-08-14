@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
 import { Task } from '../types';
@@ -20,36 +20,40 @@ export const ShakeCompleteModal: React.FC<ShakeCompleteModalProps> = ({
 }) => {
   const [isShaking, setIsShaking] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState(false);
+  // Ref-based guard prevents stale closure from firing multiple times
+  const hasTriggered = useRef(false);
 
   // Reset state whenever the modal opens for a new task
   useEffect(() => {
     if (isOpen) {
       setIsShaking(false);
       setIsCompleted(false);
+      setPermissionDenied(false);
+      hasTriggered.current = false;
     }
   }, [isOpen]);
 
-  // Device motion shake detection listener
+  // Device motion shake detection — requests iOS permission if needed
   useEffect(() => {
-    if (!isOpen || isCompleted) return;
+    if (!isOpen) return;
 
     let lastX = 0, lastY = 0, lastZ = 0;
     let lastTime = 0;
-    const SHAKE_THRESHOLD = 15;
+    const SHAKE_THRESHOLD = 12;
 
     const handleMotion = (event: DeviceMotionEvent) => {
       const current = event.accelerationIncludingGravity;
       if (!current || current.x === null || current.y === null || current.z === null) return;
 
       const currentTime = Date.now();
-      if (currentTime - lastTime > 100) {
+      if (currentTime - lastTime > 80) {
         const diffTime = currentTime - lastTime;
         lastTime = currentTime;
 
         const deltaX = Math.abs(current.x - lastX);
         const deltaY = Math.abs(current.y - lastY);
         const deltaZ = Math.abs(current.z - lastZ);
-
         const speed = ((deltaX + deltaY + deltaZ) / diffTime) * 10000;
 
         if (speed > SHAKE_THRESHOLD) {
@@ -62,43 +66,57 @@ export const ShakeCompleteModal: React.FC<ShakeCompleteModalProps> = ({
       }
     };
 
-    window.addEventListener('devicemotion', handleMotion);
+    const startListening = () => {
+      window.addEventListener('devicemotion', handleMotion);
+    };
+
+    // iOS 13+ requires explicit permission
+    const DeviceMotionEventTyped = DeviceMotionEvent as unknown as {
+      requestPermission?: () => Promise<'granted' | 'denied'>;
+    };
+
+    if (typeof DeviceMotionEventTyped.requestPermission === 'function') {
+      DeviceMotionEventTyped.requestPermission()
+        .then((state) => {
+          if (state === 'granted') {
+            startListening();
+          } else {
+            setPermissionDenied(true);
+          }
+        })
+        .catch(() => setPermissionDenied(true));
+    } else {
+      // Android, desktop, or older iOS — just attach directly
+      startListening();
+    }
+
     return () => {
       window.removeEventListener('devicemotion', handleMotion);
     };
-  }, [isOpen, isCompleted]);
+  }, [isOpen]);
 
   const triggerCompletion = () => {
-    if (isCompleted || isShaking) return;
+    // Ref guard prevents duplicate triggers from stale closures
+    if (hasTriggered.current) return;
+    hasTriggered.current = true;
+
     setIsShaking(true);
 
-    // Haptic vibration feedback
     if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      try {
-        navigator.vibrate([100, 50, 100, 50, 200]);
-      } catch (e) {
-        // Ignore unsupported error
-      }
+      try { navigator.vibrate([100, 50, 100, 50, 200]); } catch (_) {}
     }
 
-    // After violent shake animation, pop confetti and show celebration
     setTimeout(() => {
       setIsShaking(false);
       setIsCompleted(true);
 
-      // Trigger multi-angle confetti
       try {
-        confetti({
-          particleCount: 80,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ['#7C3AED', '#EC4899', '#F59E0B', '#10B981', '#FFFFFF'],
-        });
-      } catch (e) {}
+        confetti({ particleCount: 100, spread: 80, origin: { y: 0.6 }, colors: ['#7C3AED', '#EC4899', '#F59E0B', '#10B981', '#FFFFFF'] });
+        setTimeout(() => confetti({ particleCount: 60, angle: 60, spread: 55, origin: { x: 0 }, colors: ['#7C3AED', '#F59E0B'] }), 200);
+        setTimeout(() => confetti({ particleCount: 60, angle: 120, spread: 55, origin: { x: 1 }, colors: ['#EC4899', '#10B981'] }), 400);
+      } catch (_) {}
 
-      if (task) {
-        onCompleteSuccess(task.id);
-      }
+      if (task) onCompleteSuccess(task.id);
     }, 900);
   };
 
@@ -161,7 +179,9 @@ export const ShakeCompleteModal: React.FC<ShakeCompleteModalProps> = ({
             </h2>
 
             <p className="text-purple-100 text-sm sm:text-base max-w-xs mt-3 leading-relaxed font-medium">
-              Finish strong! Give your phone a quick shake to mark this task as done.
+              {permissionDenied
+                ? 'Motion access denied. Tap the button below to complete!'
+                : 'Give your phone a quick shake — or tap the icon above to complete!'}
             </p>
 
             {/* Tap Simulator Button */}
@@ -170,7 +190,7 @@ export const ShakeCompleteModal: React.FC<ShakeCompleteModalProps> = ({
               onClick={triggerCompletion}
               className="mt-8 px-6 py-2.5 rounded-full bg-white/20 hover:bg-white/30 text-purple-100 text-xs font-bold tracking-wider uppercase border border-white/25 transition cursor-pointer backdrop-blur-sm shadow-xs"
             >
-              (OR TAP TO SIMULATE)
+              TAP TO COMPLETE
             </motion.button>
           </div>
         ) : (
