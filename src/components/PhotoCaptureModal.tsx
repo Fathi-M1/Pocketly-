@@ -45,7 +45,8 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
 
     try {
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY || (window as any).GEMINI_API_KEY;
-      if (!apiKey) throw new Error('No Gemini API key found. Add VITE_GEMINI_API_KEY to your .env file.');
+      console.log('[PhotoCapture] API key present:', !!apiKey, '| first 6 chars:', apiKey?.slice(0, 6));
+      if (!apiKey) throw new Error('API key missing — add VITE_GEMINI_API_KEY to Vercel env vars and redeploy.');
 
       const ai = new GoogleGenAI({ apiKey });
 
@@ -87,7 +88,9 @@ Rules:
       setParsedTasks(items.map((t) => ({ ...t, selected: true })));
       setStage('review');
     } catch (e: any) {
-      setErrorMsg(e.message ?? 'Something went wrong. Please try again.');
+      console.error('[PhotoCapture] Error:', e);
+      const msg = e?.message ?? String(e);
+      setErrorMsg(msg);
       setStage('error');
     }
   };
